@@ -1,9 +1,7 @@
-// Lightweight polyfill: define global File for environments (Node < 20) where File is undefined.
-// This prevents `ReferenceError: File is not defined` when some packages (e.g., undici) expect File.
+// Lightweight polyfill: Node < 20 വേർഷനുകളിൽ File undefined ആണെങ്കിൽ ഇത് സഹായിക്കും
 if (typeof globalThis.File === 'undefined') {
   globalThis.File = class File extends Uint8Array {
     constructor(parts = [], name = '', options = {}) {
-      // combine parts into one Uint8Array
       let total = 0;
       const chunks = parts.map(p => {
         if (typeof p === 'string') {
@@ -34,44 +32,48 @@ if (typeof globalThis.File === 'undefined') {
       this.type = options.type || '';
     }
     async text() { return new TextDecoder().decode(this); }
-    // minimal slice implementation (optional)
     slice(start, end, contentType) {
       const s = start || 0;
       const e = (typeof end === 'number') ? end : this.length;
       const sliced = this.subarray(s, e);
-      const f = new File([sliced], this.name, { lastModified: this.lastModified, type: contentType || this.type });
-      return f;
+      return new File([sliced], this.name, { lastModified: this.lastModified, type: contentType || this.type });
     }
   };
 }
 
-// --- original imports and app start below ---
 const express = require('express');
 const bodyParser = require('body-parser');
-const { extractDirectLink } = require('./downloader');
+const { extractDirectLink } = require('./downloader'); // downloader.js ഇമ്പോർട്ട് ചെയ്യുന്നു
 
 const app = express();
 app.use(bodyParser.json());
 
+// API വർക്ക് ചെയ്യുന്നുണ്ടോ എന്ന് നോക്കാൻ (GET)
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+// Terabox ലിങ്ക് കൺവേർട്ട് ചെയ്യാൻ (POST)
 app.post('/convert', async (req, res) => {
   const { url } = req.body || {};
+  
   if (!url || typeof url !== 'string') {
-    return res.status(400).json({ error: "Missing 'url' in request body" });
+    return res.status(400).json({ error: "Missing 'url' in request body" }); // URL ഇല്ലെങ്കിൽ
   }
 
   try {
+    // downloader.js-ലെ ഫങ്ക്ഷൻ പ്രവർത്തിപ്പിക്കുന്നു
     const direct = await extractDirectLink(url);
+    
     if (!direct) {
-      return res.status(422).json({ error: 'Direct link not found without JS/browser or requires login' });
+      return res.status(422).json({ error: 'Direct link not found or requires login' }); // ലിങ്ക് കിട്ടിയില്ലെങ്കിൽ
     }
-    return res.json({ directUrl: direct });
+    
+    return res.json({ directUrl: direct }); // വിജയിച്ചാൽ ലിങ്ക് നൽകുന്നു
   } catch (err) {
     console.error('Extraction error:', err);
-    return res.status(500).json({ error: 'Internal error', details: String(err) });
+    return res.status(500).json({ error: 'Internal error', details: String(err) }); // മറ്റെന്തെങ്കിലും എറർ വന്നാൽ
   }
 });
 
+// പോർട്ട് സെറ്റിംഗ്സ് (Render 10000 ആണ് സാധാരണ ഉപയോഗിക്കുന്നത്)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server listening on ${PORT}`));
