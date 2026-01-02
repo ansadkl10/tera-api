@@ -1,104 +1,58 @@
-const puppeteer = require('puppeteer');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
-async function extractDirectLink(shareUrl) {
-  let browser;
-  try {
-    // ബ്രൗസർ സ്റ്റാർട്ട് ചെയ്യുന്നു
-    browser = await puppeteer.launch({
-      headless: "new",
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-
-    const page = await browser.newPage();
-    
-    // Terabox പേജിലേക്ക് പോകുന്നു
-    await page.goto(shareUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-
-    // പേജിലെ ഡൗൺലോഡ് ലിങ്കുകൾ തപ്പുന്നു
-    const directUrl = await page.evaluate(() => {
-      // സാധാരണയായി കാണുന്ന ഡൗൺലോഡ് ബട്ടണുകളുടെ ലിങ്ക് എടുക്കുന്നു
-      const links = Array.from(document.querySelectorAll('a, iframe, video, source'));
-      for (let item of links) {
-        const url = item.href || item.src;
-        if (url && (url.includes('d.pcs.baidu.com') || url.includes('terabox') || url.includes('download'))) {
-          return url;
-        }
-      }
-      return null;
-    });
-
-    return directUrl;
-  } catch (e) {
-    console.error("Puppeteer Error:", e);
-    return null;
-  } finally {
-    if (browser) await browser.close();
-  }
+[span_1](start_span)// ലളിതമായ രീതിയിൽ ലിങ്ക് ഡയറക്ട് ആണോ എന്ന് നോക്കുന്നു[span_1](end_span)
+function isDirectFileLike(url) {
+  return /^https?:\/\/.*\.(zip|rar|7z|tar|mp4|mkv|pdf|exe|iso|jpg|png)(\?.*)?$/i.test(url);
 }
 
-module.exports = { extractDirectLink };
+async function tryHead(url) {
   try {
+    const head = await axios.head(url, { maxRedirects: 10, timeout: 10000, validateStatus: null });
+    const ct = (head.headers['content-type'] || '').toLowerCase();
+    const cd = (head.headers['content-disposition'] || '').toLowerCase();
+    if (cd.includes('attachment') || /application\/octet-stream|application\/zip|video\/|audio\/|image\//.test(ct)) {
+      return head.request && head.request.res && head.request.res.responseUrl ? head.request.res.responseUrl : url;
+    }
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
+[span_2](start_span)// പ്രധാനപ്പെട്ട ഫങ്ക്ഷൻ[span_2](end_span)
+async function extractDirectLink(shareUrl, timeoutMs = 15000) {
+  if (isDirectFileLike(shareUrl)) return shareUrl;
+
+  let resp;
+  try {
+    [span_3](start_span)// ഇവിടെ 'async' ഫങ്ക്ഷനുള്ളിൽ ആയതിനാൽ 'await' ഉപയോഗിക്കാം[span_3](end_span)
     resp = await axios.get(shareUrl, {
       maxRedirects: 5,
       timeout: timeoutMs,
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; lightweight-extractor/1.0)' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
     });
   } catch (e) {
-    // If the GET fails, give up early
     return null;
   }
 
   const html = resp.data;
   const $ = cheerio.load(html);
-
   const candidates = new Set();
 
-  // 1) anchors with href
-  $('a').each((i, el) => {
-    const href = $(el).attr('href');
-    if (href && href.startsWith('http')) candidates.add(href);
-  });
-
-  // 2) look for buttons/data-url attributes
-  $('button').each((i, el) => {
-    const dataUrl = $(el).attr('data-url') || $(el).attr('data-href');
-    if (dataUrl && dataUrl.startsWith('http')) candidates.add(dataUrl);
-  });
-
-  // 3) search inline scripts for https links or JSON fields
+  [span_4](start_span)// സ്‌ക്രിപ്റ്റുകളിൽ നിന്നും മറ്റും ലിങ്കുകൾ തപ്പുന്നു[span_4](end_span)
   $('script').each((i, el) => {
     const script = $(el).html() || '';
-    const re = /https?:\/\/[^\s"'<>]{30,}/g;
-    const m = script.match(re);
-    if (m) m.forEach(u => candidates.add(u));
-    const jsonRe = /["']?(downloadUrl|download_url|file_url|url|src|download_link)["']?\s*[:=]\s*["'](https?:\/\/[^"']+)["']/ig;
+    const jsonRe = /["']?(downloadUrl|file_url|url)["']?\s*[:=]\s*["'](https?:\/\/[^"']+)["']/ig;
     let jj;
     while ((jj = jsonRe.exec(script)) !== null) {
       candidates.add(jj[2]);
     }
   });
 
-  // 4) global HTML scan for long https links
-  const reAny = /https?:\/\/[^\s"'<>]{30,}/g;
-  const allMatches = Array.from(new Set((html.match(reAny) || [])));
-  allMatches.forEach(u => {
-    if (/terabox|pan|file|download|storage|d.do|d.pcs|downloadlink/i.test(u)) candidates.add(u);
-  });
-
-  // Validate candidates with HEAD
+  [span_5](start_span)// ലിങ്കുകൾ പരിശോധിച്ച് ഉറപ്പുവരുത്തുന്നു[span_5](end_span)
   for (const c of candidates) {
     const validated = await tryHead(c);
     if (validated) return validated;
   }
-
-  // As last resort: try following any redirects from GET response (resp.request.res.responseUrl)
-  try {
-    if (resp.request && resp.request.res && resp.request.res.responseUrl) {
-      const final = resp.request.res.responseUrl;
-      const validated = await tryHead(final);
-      if (validated) return validated;
-    }
-  } catch (e) {}
 
   return null;
 }
