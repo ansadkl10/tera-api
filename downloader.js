@@ -1,39 +1,42 @@
-const axios = require('axios');
-const cheerio = require('cheerio');
+const puppeteer = require('puppeteer');
 
-function isDirectFileLike(url) {
-  return /^https?:\/\/.*\.(zip|rar|7z|tar|mp4|mkv|pdf|exe|iso|jpg|png)(\?.*)?$/i.test(url);
-}
-
-async function tryHead(url) {
+async function extractDirectLink(shareUrl) {
+  let browser;
   try {
-    const head = await axios.head(url, { maxRedirects: 10, timeout: 10000, validateStatus: null });
-    const ct = (head.headers['content-type'] || '').toLowerCase();
-    const cd = (head.headers['content-disposition'] || '').toLowerCase();
-    if (cd.includes('attachment') || /application\/octet-stream|application\/zip|video\/|audio\/|image\//.test(ct)) {
-      return head.request && head.request.res && head.request.res.responseUrl ? head.request.res.responseUrl : url;
-    }
-    if (head.status >= 200 && head.status < 300 && !/text\/html/.test(ct)) {
-      return head.request && head.request.res && head.request.res.responseUrl ? head.request.res.responseUrl : url;
-    }
+    // ബ്രൗസർ സ്റ്റാർട്ട് ചെയ്യുന്നു
+    browser = await puppeteer.launch({
+      headless: "new",
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+
+    const page = await browser.newPage();
+    
+    // Terabox പേജിലേക്ക് പോകുന്നു
+    await page.goto(shareUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+
+    // പേജിലെ ഡൗൺലോഡ് ലിങ്കുകൾ തപ്പുന്നു
+    const directUrl = await page.evaluate(() => {
+      // സാധാരണയായി കാണുന്ന ഡൗൺലോഡ് ബട്ടണുകളുടെ ലിങ്ക് എടുക്കുന്നു
+      const links = Array.from(document.querySelectorAll('a, iframe, video, source'));
+      for (let item of links) {
+        const url = item.href || item.src;
+        if (url && (url.includes('d.pcs.baidu.com') || url.includes('terabox') || url.includes('download'))) {
+          return url;
+        }
+      }
+      return null;
+    });
+
+    return directUrl;
   } catch (e) {
-    // ignore
+    console.error("Puppeteer Error:", e);
+    return null;
+  } finally {
+    if (browser) await browser.close();
   }
-  return null;
 }
 
-/**
- * Try multiple heuristics without a headless browser:
- * 1) If URL already looks like direct file link -> return
- * 2) GET share page HTML -> parse <a> tags for hrefs, search scripts for long https links
- * 3) Try common JSON keys like downloadUrl in the HTML
- * 4) Validate candidates with HEAD requests (follow redirects)
- */
-async function extractDirectLink(shareUrl, timeoutMs = 15000) {
-  if (isDirectFileLike(shareUrl)) return shareUrl;
-
-  // quick GET of share page
-  let resp;
+module.exports = { extractDirectLink };
   try {
     resp = await axios.get(shareUrl, {
       maxRedirects: 5,
